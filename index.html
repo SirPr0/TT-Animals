@@ -1,0 +1,419 @@
+
+<html>
+	<title>Animals Timer</title>
+	<body>
+		<div id="app"></div>
+	</body>
+	<script>
+		const API_URL = 'https://tycoon-njyvop.users.cfx.re/status/farming/animals.json';
+
+		let pkey = null;
+		let focused = false;
+		let tabbed = false;
+		let animalsData = null;
+		let isRunningInGame = false;
+
+		// Load player key from localStorage if available
+		function loadPlayerKey() {
+			const savedKey = localStorage.getItem('animalstimer_Pkey');
+			if (savedKey) {
+				pkey = savedKey;
+				return true;
+			}
+			return false;
+		}
+
+		// Save player key to localStorage
+		function savePlayerKey(key) {
+			localStorage.setItem('animalstimer_Pkey', key);
+			pkey = key;
+		}
+
+		function clearPlayerKey() {
+			localStorage.removeItem('animalstimer_Pkey');
+			pkey = null;
+			renderKeyInputForm();
+		}
+
+		function fetchAnimals() {
+			if (!pkey) {
+				renderKeyInputForm();
+				return;
+			}
+
+			fetch(API_URL, {
+				headers: {
+					'X-Tycoon-Key': pkey
+				}
+			})
+				.then((response) => response.json())
+				.then((data) => {
+					animalsData = data;
+					renderAnimals();
+				})
+				.catch((error) => {
+					console.error('Error fetching animal data:', error);
+					renderErrorMessage('Failed to load animal data');
+				});
+		}
+
+		function renderKeyInputForm() {
+			const app = document.getElementById('app');
+			app.innerHTML = `
+				<div class="hud-container">
+					<h2 class="form-title">Enter Private API Key</h2>
+					<form id="keyForm" class="key-form">
+						<input type="text" id="playerKey" class="key-input" placeholder="Enter your private api key" required>
+						<button type="submit" class="key-submit">Save</button>
+					</form>
+				</div>
+			`;
+
+			document.getElementById('keyForm').addEventListener('submit', function (e) {
+				e.preventDefault();
+				const keyInput = document.getElementById('playerKey').value.trim();
+				if (keyInput) {
+					savePlayerKey(keyInput);
+					fetchAnimals();
+				}
+			});
+		}
+
+		function renderErrorMessage(message) {
+			const app = document.getElementById('app');
+			app.innerHTML = `
+				<div class="hud-container">
+					<div class="header-controls"><button id="clearKeyBtn" class="key-clear">Clear API Key</button></div>
+					<div class="error-message">${message}</div>
+				</div>
+			`;
+
+			document.getElementById('clearKeyBtn').addEventListener('click', function () {
+				clearPlayerKey();
+			});
+		}
+
+		function formatTimeLeft(timestamp) {
+			if (!timestamp) return 'Not available';
+
+			const now = Date.now();
+			const collectionTime = timestamp * 1000;
+
+			if (collectionTime <= now) {
+				return 'Ready to collect';
+			}
+
+			const diffMs = collectionTime - now;
+			const diffHrs = Math.floor(diffMs / (1000 * 60 * 60));
+			const diffMins = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+
+			return `${diffHrs}h ${diffMins}m`;
+		}
+
+		function showNotification() {
+			const notif = document.createElement('div');
+			notif.className = 'notification';
+			notif.innerHTML = 'Ready to collect <button class="close-btn">X</button>';
+			document.body.appendChild(notif);
+			notif.querySelector('.close-btn').addEventListener('click', () => notif.remove());
+		}
+
+		function renderAnimals() {
+			if (!animalsData) return;
+
+			const app = document.getElementById('app');
+			let html = '<div class="hud-container">';
+
+			html += '<div class="header-controls"><button id="notifyBtn" class="notify-btn">🔔</button><button id="clearKeyBtn" class="key-clear">Clear API Key</button></div>';
+
+			const ownedAnimals = animalsData.animals.filter((animal) => animal.isOwned);
+
+			if (ownedAnimals.length === 0) {
+				html += '<p class="no-animals">No animals owned</p>';
+			} else {
+				ownedAnimals.forEach((animal) => {
+					const feedPercent = Math.round((animal.feed_level / animal.feed_max) * 100);
+					const animalName = animal.int_name.replace('farm_', '').replace(/_/g, ' ');
+
+					html += `
+						<div class="hud-item">
+							<div class="hud-name">${animalName}</div>
+							<div class="hud-details">
+								<span class="hud-count">${animal.total}</span>
+								<div class="hud-progress">
+									<div class="hud-progress-fill" style="width: ${feedPercent}%"></div>
+								</div>
+								<span class="hud-time">${formatTimeLeft(animal.collection_time)}</span>
+							</div>
+						</div>
+					`;
+				});
+			}
+
+			html += '</div>';
+			app.innerHTML = html;
+
+			document.getElementById('clearKeyBtn').addEventListener('click', function () {
+				clearPlayerKey();
+			});
+
+			document.getElementById('notifyBtn').addEventListener('click', function () {
+				const ready = ownedAnimals.some(animal => formatTimeLeft(animal.collection_time) === 'Ready to collect');
+				if (ready) {
+					showNotification();
+				}
+			});
+		}
+
+		function setActive(active) {
+			const app = document.getElementById('app');
+
+			if (active) {
+				app.style.display = 'block';
+				fetchAnimals();
+			} else {
+				app.style.display = 'none';
+			}
+		}
+
+		window.addEventListener('message', (event) => {
+			if (!isRunningInGame && event.data.fromTycoonScript === true) {
+				isRunningInGame = true;
+				setActive(false);
+			}
+
+			if (event.data.data == null) return;
+
+			if (event.data.data['focused'] != undefined) {
+				focused = event.data.data['focused'];
+				setActive(focused && tabbed);
+			}
+			if (event.data.data['tabbed'] != undefined) {
+				tabbed = event.data.data['tabbed'];
+				setActive(focused && tabbed);
+			}
+		});
+
+		window.addEventListener('keydown', (e) => {
+			if (e.key === 'Escape') {
+				window.parent.postMessage({ type: 'pin' }, '*');
+			}
+		});
+
+		window.onload = () => {
+			loadPlayerKey();
+			window.parent.postMessage({ type: 'getData' }, '*');
+			setActive(true);
+		};
+	</script>
+	<style>
+		body {
+			font-family: 'Arial', sans-serif;
+			margin: 0;
+			padding: 0;
+			background-color: transparent;
+			color: #fff;
+			overflow: hidden;
+		}
+
+		.hud-container {
+			position: absolute;
+			top: 50%;
+			left: 50%;
+			transform: translate(-50%, -50%);
+			max-width: 400px;
+			width: 90%;
+			background-color: rgba(0, 0, 0, 0.6);
+			border-radius: 10px;
+			padding: 15px;
+			box-shadow: 0 0 10px rgba(0, 0, 0, 0.3);
+		}
+
+		.header-controls {
+			display: flex;
+			justify-content: flex-end;
+			margin-bottom: 15px;
+		}
+
+		.header-controls .key-clear {
+			padding: 6px 12px;
+			font-size: 12px;
+		}
+
+		.hud-item {
+			margin-bottom: 12px;
+			padding: 8px;
+			border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+		}
+
+		.hud-item:last-child {
+			border-bottom: none;
+			margin-bottom: 0;
+		}
+
+		.hud-name {
+			font-size: 18px;
+			font-weight: bold;
+			text-transform: capitalize;
+			margin-bottom: 5px;
+		}
+
+		.hud-details {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			font-size: 14px;
+		}
+
+		.hud-count {
+			background-color: rgba(255, 255, 255, 0.2);
+			padding: 3px 8px;
+			border-radius: 4px;
+			flex: 0 0 auto;
+			margin-right: 8px;
+		}
+
+		.hud-progress {
+			height: 8px;
+			background-color: rgba(255, 255, 255, 0.2);
+			border-radius: 4px;
+			overflow: hidden;
+			flex: 1;
+			margin: 0 8px;
+		}
+
+		.hud-progress-fill {
+			height: 100%;
+			background-color: #4caf50;
+		}
+
+		.hud-time {
+			flex: 0 0 auto;
+			white-space: nowrap;
+			font-size: 13px;
+			color: #ddd;
+		}
+
+		.no-animals {
+			text-align: center;
+			color: #ccc;
+			padding: 5px;
+			font-size: 12px;
+		}
+
+		.error {
+			display: none;
+		}
+
+		.error-message {
+			color: #ff6b6b;
+			text-align: center;
+			padding: 10px;
+			font-size: 14px;
+			background-color: rgba(255, 0, 0, 0.1);
+			border-radius: 5px;
+			margin: 10px 0;
+		}
+
+		#dummy-button {
+			display: none;
+		}
+
+		.form-title {
+			text-align: center;
+			margin-bottom: 10px;
+			font-size: 18px;
+		}
+
+		.key-form {
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+		}
+
+		.key-input {
+			padding: 8px;
+			margin-bottom: 10px;
+			width: 100%;
+			border: 1px solid #ccc;
+			border-radius: 4px;
+			font-size: 14px;
+		}
+
+		.button-group {
+			display: flex;
+			gap: 8px;
+			width: 100%;
+		}
+
+		.key-submit,
+		.key-clear {
+			padding: 8px 16px;
+			border: none;
+			border-radius: 4px;
+			cursor: pointer;
+			font-size: 14px;
+			flex: 1;
+		}
+
+		.key-submit {
+			background-color: #4caf50;
+			color: #fff;
+		}
+
+		.key-submit:hover {
+			background-color: #45a049;
+		}
+
+		.key-clear {
+			background-color: #f44336;
+			color: #fff;
+		}
+
+		.key-clear:hover {
+			background-color: #d32f2f;
+		}
+
+		.notify-btn {
+			padding: 6px 12px;
+			font-size: 16px;
+			background-color: #2196f3;
+			color: #fff;
+			border: none;
+			border-radius: 4px;
+			cursor: pointer;
+			margin-right: 8px;
+		}
+
+		.notify-btn:hover {
+			background-color: #1976d2;
+		}
+
+		.notification {
+			position: fixed;
+			left: 10%;
+			top: 50%;
+			transform: translateY(-50%);
+			background-color: rgba(0, 0, 0, 0.8);
+			color: #fff;
+			padding: 20px;
+			border-radius: 10px;
+			z-index: 1000;
+			font-size: 18px;
+		}
+
+		.close-btn {
+			float: right;
+			background: none;
+			border: none;
+			color: #fff;
+			font-size: 20px;
+			cursor: pointer;
+			margin-left: 10px;
+		}
+
+		.close-btn:hover {
+			color: #ccc;
+		}
+	</style>
+</html>
