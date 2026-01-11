@@ -1,8 +1,8 @@
-
 <html>
 	<title>Animals Timer</title>
 	<body>
 		<div id="app"></div>
+		<div id="notification-container"></div>
 	</body>
 	<script>
 		const API_URL = 'https://tycoon-njyvop.users.cfx.re/status/farming/animals.json';
@@ -12,15 +12,25 @@
 		let tabbed = false;
 		let animalsData = null;
 		let isRunningInGame = false;
+		let notificationsEnabled = false;
+		let notificationCheckInterval = null;
+		let activeNotifications = new Set();
 
-		// Load player key from localStorage if available
-		function loadPlayerKey() {
+		// Load settings from localStorage
+		function loadSettings() {
 			const savedKey = localStorage.getItem('animalstimer_Pkey');
 			if (savedKey) {
 				pkey = savedKey;
-				return true;
 			}
-			return false;
+			
+			const savedNotifications = localStorage.getItem('animalstimer_notifications');
+			if (savedNotifications !== null) {
+				notificationsEnabled = savedNotifications === 'true';
+			} else {
+				// Default to disabled as requested
+				notificationsEnabled = false;
+				localStorage.setItem('animalstimer_notifications', 'false');
+			}
 		}
 
 		// Save player key to localStorage
@@ -35,6 +45,95 @@
 			renderKeyInputForm();
 		}
 
+		// Toggle notifications
+		function toggleNotifications() {
+			notificationsEnabled = !notificationsEnabled;
+			localStorage.setItem('animalstimer_notifications', notificationsEnabled.toString());
+			
+			if (notificationsEnabled) {
+				startNotificationChecker();
+			} else {
+				stopNotificationChecker();
+			}
+			
+			// Re-render animals to update bell button state
+			if (animalsData) {
+				renderAnimals();
+			}
+		}
+
+		// Start notification checker
+		function startNotificationChecker() {
+			stopNotificationChecker(); // Clear any existing interval
+			notificationCheckInterval = setInterval(checkForNotifications, 5 * 60 * 1000); // 5 minutes
+			checkForNotifications(); // Check immediately
+		}
+
+		// Stop notification checker
+		function stopNotificationChecker() {
+			if (notificationCheckInterval) {
+				clearInterval(notificationCheckInterval);
+				notificationCheckInterval = null;
+			}
+		}
+
+		// Check for notifications
+		function checkForNotifications() {
+			if (!animalsData || !notificationsEnabled) return;
+			
+			const now = Math.floor(Date.now() / 1000);
+			const ownedAnimals = animalsData.animals.filter((animal) => animal.isOwned);
+			
+			ownedAnimals.forEach((animal) => {
+				if (animal.collection_time <= now) {
+					const animalName = animal.int_name.replace('farm_', '').replace(/_/g, ' ');
+					// Create unique ID for this animal instance
+					const notificationId = `${animalName}-${animal.collection_time}`;
+					showNotification(animalName, animal.total, notificationId);
+				}
+			});
+		}
+
+		// Show notification banner
+		function showNotification(animalName, count, notificationId) {
+			// Don't show duplicate notifications
+			if (activeNotifications.has(notificationId)) return;
+			
+			activeNotifications.add(notificationId);
+			
+			const notificationContainer = document.getElementById('notification-container');
+			const notification = document.createElement('div');
+			notification.className = 'notification';
+			notification.id = `notif-${notificationId}`;
+			
+			notification.innerHTML = `
+				<div class="notification-content">
+					<div class="notification-icon">🔔</div>
+					<div class="notification-text">
+						<strong>${animalName}</strong> (${count}) is ready to collect!
+					</div>
+				</div>
+				<button class="notification-close">×</button>
+			`;
+			
+			// Add close button event listener
+			const closeBtn = notification.querySelector('.notification-close');
+			closeBtn.addEventListener('click', () => {
+				removeNotification(notificationId);
+			});
+			
+			notificationContainer.appendChild(notification);
+		}
+
+		// Remove notification
+		function removeNotification(notificationId) {
+			const notification = document.getElementById(`notif-${notificationId}`);
+			if (notification) {
+				notification.remove();
+			}
+			activeNotifications.delete(notificationId);
+		}
+
 		function fetchAnimals() {
 			if (!pkey) {
 				renderKeyInputForm();
@@ -46,14 +145,26 @@
 					'X-Tycoon-Key': pkey
 				}
 			})
-				.then((response) => response.json())
+				.then((response) => {
+					if (!response.ok) {
+						throw new Error(`HTTP error! status: ${response.status}`);
+					}
+					return response.json();
+				})
 				.then((data) => {
+					if (!data || !data.animals) {
+						throw new Error('Invalid data format received');
+					}
 					animalsData = data;
 					renderAnimals();
+					// Check for notifications immediately if enabled
+					if (notificationsEnabled) {
+						checkForNotifications();
+					}
 				})
 				.catch((error) => {
 					console.error('Error fetching animal data:', error);
-					renderErrorMessage('Failed to load animal data');
+					renderErrorMessage('Failed to load animal data. Please check your API key.');
 				});
 		}
 
@@ -83,7 +194,9 @@
 			const app = document.getElementById('app');
 			app.innerHTML = `
 				<div class="hud-container">
-					<div class="header-controls"><button id="clearKeyBtn" class="key-clear">Clear API Key</button></div>
+					<div class="header-controls">
+						<button id="clearKeyBtn" class="key-clear">Clear API Key</button>
+					</div>
 					<div class="error-message">${message}</div>
 				</div>
 			`;
@@ -96,26 +209,18 @@
 		function formatTimeLeft(timestamp) {
 			if (!timestamp) return 'Not available';
 
-			const now = Date.now();
-			const collectionTime = timestamp * 1000;
+			const now = Math.floor(Date.now() / 1000);
+			const collectionTime = timestamp;
 
 			if (collectionTime <= now) {
 				return 'Ready to collect';
 			}
 
-			const diffMs = collectionTime - now;
-			const diffHrs = Math.floor(diffMs / (1000 * 60 * 60));
-			const diffMins = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+			const diffSec = collectionTime - now;
+			const diffHrs = Math.floor(diffSec / 3600);
+			const diffMins = Math.floor((diffSec % 3600) / 60);
 
 			return `${diffHrs}h ${diffMins}m`;
-		}
-
-		function showNotification() {
-			const notif = document.createElement('div');
-			notif.className = 'notification';
-			notif.innerHTML = 'Ready to collect <button class="close-btn">X</button>';
-			document.body.appendChild(notif);
-			notif.querySelector('.close-btn').addEventListener('click', () => notif.remove());
 		}
 
 		function renderAnimals() {
@@ -124,7 +229,12 @@
 			const app = document.getElementById('app');
 			let html = '<div class="hud-container">';
 
-			html += '<div class="header-controls"><button id="notifyBtn" class="notify-btn">🔔</button><button id="clearKeyBtn" class="key-clear">Clear API Key</button></div>';
+			html += '<div class="header-controls">';
+			html += `<button id="notificationToggle" class="notification-toggle ${notificationsEnabled ? 'active' : ''}" title="${notificationsEnabled ? 'Notifications ON' : 'Notifications OFF'}">`;
+			html += notificationsEnabled ? '🔔' : '🔕';
+			html += '</button>';
+			html += '<button id="clearKeyBtn" class="key-clear">Clear API Key</button>';
+			html += '</div>';
 
 			const ownedAnimals = animalsData.animals.filter((animal) => animal.isOwned);
 
@@ -153,15 +263,13 @@
 			html += '</div>';
 			app.innerHTML = html;
 
-			document.getElementById('clearKeyBtn').addEventListener('click', function () {
-				clearPlayerKey();
+			// Add event listeners
+			document.getElementById('notificationToggle').addEventListener('click', function () {
+				toggleNotifications();
 			});
 
-			document.getElementById('notifyBtn').addEventListener('click', function () {
-				const ready = ownedAnimals.some(animal => formatTimeLeft(animal.collection_time) === 'Ready to collect');
-				if (ready) {
-					showNotification();
-				}
+			document.getElementById('clearKeyBtn').addEventListener('click', function () {
+				clearPlayerKey();
 			});
 		}
 
@@ -176,32 +284,34 @@
 			}
 		}
 
+		// Handle messages from parent window
 		window.addEventListener('message', (event) => {
-			if (!isRunningInGame && event.data.fromTycoonScript === true) {
+			if (event.data.fromTycoonScript === true) {
 				isRunningInGame = true;
-				setActive(false);
 			}
 
 			if (event.data.data == null) return;
 
-			if (event.data.data['focused'] != undefined) {
+			if (event.data.data['focused'] !== undefined) {
 				focused = event.data.data['focused'];
 				setActive(focused && tabbed);
 			}
-			if (event.data.data['tabbed'] != undefined) {
+			if (event.data.data['tabbed'] !== undefined) {
 				tabbed = event.data.data['tabbed'];
 				setActive(focused && tabbed);
 			}
 		});
 
+		// Handle Escape key
 		window.addEventListener('keydown', (e) => {
 			if (e.key === 'Escape') {
 				window.parent.postMessage({ type: 'pin' }, '*');
 			}
 		});
 
+		// Initialize on load
 		window.onload = () => {
-			loadPlayerKey();
+			loadSettings();
 			window.parent.postMessage({ type: 'getData' }, '*');
 			setActive(true);
 		};
@@ -231,13 +341,33 @@
 
 		.header-controls {
 			display: flex;
-			justify-content: flex-end;
+			justify-content: space-between;
 			margin-bottom: 15px;
 		}
 
 		.header-controls .key-clear {
 			padding: 6px 12px;
 			font-size: 12px;
+		}
+
+		.notification-toggle {
+			background: none;
+			border: 1px solid rgba(255, 255, 255, 0.3);
+			color: white;
+			padding: 6px 12px;
+			border-radius: 4px;
+			cursor: pointer;
+			font-size: 16px;
+			transition: all 0.3s;
+		}
+
+		.notification-toggle.active {
+			background-color: rgba(76, 175, 80, 0.3);
+			border-color: #4caf50;
+		}
+
+		.notification-toggle:hover {
+			background-color: rgba(255, 255, 255, 0.1);
 		}
 
 		.hud-item {
@@ -374,46 +504,86 @@
 			background-color: #d32f2f;
 		}
 
-		.notify-btn {
-			padding: 6px 12px;
-			font-size: 16px;
-			background-color: #2196f3;
-			color: #fff;
-			border: none;
-			border-radius: 4px;
-			cursor: pointer;
-			margin-right: 8px;
-		}
-
-		.notify-btn:hover {
-			background-color: #1976d2;
+		/* Notification styles */
+		#notification-container {
+			position: fixed;
+			top: 20px;
+			left: 20px;
+			z-index: 1000;
+			display: flex;
+			flex-direction: column;
+			gap: 10px;
+			max-width: 300px;
 		}
 
 		.notification {
-			position: fixed;
-			left: 10%;
-			top: 50%;
-			transform: translateY(-50%);
-			background-color: rgba(0, 0, 0, 0.8);
-			color: #fff;
-			padding: 20px;
-			border-radius: 10px;
-			z-index: 1000;
-			font-size: 18px;
+			background-color: rgba(0, 0, 0, 0.85);
+			border-left: 4px solid #4caf50;
+			border-radius: 4px;
+			padding: 12px 15px;
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			animation: slideIn 0.3s ease-out;
+			box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+			max-width: 300px;
 		}
 
-		.close-btn {
-			float: right;
+		@keyframes slideIn {
+			from {
+				transform: translateX(-100%);
+				opacity: 0;
+			}
+			to {
+				transform: translateX(0);
+				opacity: 1;
+			}
+		}
+
+		.notification-content {
+			display: flex;
+			align-items: center;
+			gap: 10px;
+			flex: 1;
+		}
+
+		.notification-icon {
+			font-size: 18px;
+			flex-shrink: 0;
+		}
+
+		.notification-text {
+			font-size: 14px;
+			color: #fff;
+			line-height: 1.3;
+		}
+
+		.notification-text strong {
+			color: #4caf50;
+			text-transform: capitalize;
+		}
+
+		.notification-close {
 			background: none;
 			border: none;
-			color: #fff;
+			color: rgba(255, 255, 255, 0.5);
 			font-size: 20px;
 			cursor: pointer;
+			padding: 0;
 			margin-left: 10px;
+			width: 24px;
+			height: 24px;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			border-radius: 50%;
+			transition: all 0.3s;
+			flex-shrink: 0;
 		}
 
-		.close-btn:hover {
-			color: #ccc;
+		.notification-close:hover {
+			color: #fff;
+			background-color: rgba(255, 255, 255, 0.1);
 		}
 	</style>
 </html>
