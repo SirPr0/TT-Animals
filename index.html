@@ -1,0 +1,553 @@
+<html>
+	<title>Animals Timer</title>
+	<body>
+		<div id="app"></div>
+	</body>
+	<script>
+		const API_URL = 'https://tycoon-njyvop.users.cfx.re/status/farming/animals.json';
+
+		let pkey = null;
+		let focused = false;
+		let tabbed = false;
+		let animalsData = null;
+		let isRunningInGame = false;
+		let notificationsEnabled = false;
+		let notificationCheckInterval = null;
+		let lastCheckedTimes = {};
+		let desktopNotificationPermission = false;
+
+		// Load settings from localStorage
+		function loadSettings() {
+			const savedKey = localStorage.getItem('animalstimer_Pkey');
+			if (savedKey) {
+				pkey = savedKey;
+			}
+			
+			const savedNotifications = localStorage.getItem('animalstimer_notifications');
+			if (savedNotifications !== null) {
+				notificationsEnabled = savedNotifications === 'true';
+			} else {
+				// Default to disabled as requested
+				notificationsEnabled = false;
+				localStorage.setItem('animalstimer_notifications', 'false');
+			}
+			
+			// Load last checked times
+			const savedLastChecked = localStorage.getItem('animalstimer_lastChecked');
+			if (savedLastChecked) {
+				lastCheckedTimes = JSON.parse(savedLastChecked);
+			}
+			
+			// Check desktop notification permission
+			if ("Notification" in window) {
+				desktopNotificationPermission = Notification.permission === "granted";
+			}
+		}
+
+		// Save last checked times
+		function saveLastCheckedTimes() {
+			localStorage.setItem('animalstimer_lastChecked', JSON.stringify(lastCheckedTimes));
+		}
+
+		// Save player key to localStorage
+		function savePlayerKey(key) {
+			localStorage.setItem('animalstimer_Pkey', key);
+			pkey = key;
+		}
+
+		function clearPlayerKey() {
+			localStorage.removeItem('animalstimer_Pkey');
+			pkey = null;
+			renderKeyInputForm();
+		}
+
+		// Request desktop notification permission
+		function requestNotificationPermission() {
+			if (!("Notification" in window)) {
+				console.log("This browser does not support desktop notifications");
+				return false;
+			}
+			
+			if (Notification.permission === "granted") {
+				desktopNotificationPermission = true;
+				return true;
+			} else if (Notification.permission !== "denied") {
+				Notification.requestPermission().then(permission => {
+					if (permission === "granted") {
+						desktopNotificationPermission = true;
+						console.log("Desktop notification permission granted");
+						return true;
+					} else {
+						console.log("Desktop notification permission denied");
+						return false;
+					}
+				});
+			}
+			return false;
+		}
+
+		// Show desktop notification
+		function showDesktopNotification(animalName, count) {
+			if (!desktopNotificationPermission || !notificationsEnabled) return;
+			
+			try {
+				const notification = new Notification(`Animal Timer: ${animalName}`, {
+					body: `${animalName} (${count}) is ready to collect!`,
+					icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">🐄</text></svg>',
+					requireInteraction: true // Stays until user interacts
+				});
+				
+				notification.onclick = function() {
+					window.focus();
+					notification.close();
+				};
+				
+				// Auto-close after 10 seconds (but will stay if requireInteraction is supported)
+				setTimeout(() => notification.close(), 10000);
+			} catch (error) {
+				console.error("Error showing desktop notification:", error);
+			}
+		}
+
+		// Toggle notifications
+		function toggleNotifications() {
+			notificationsEnabled = !notificationsEnabled;
+			localStorage.setItem('animalstimer_notifications', notificationsEnabled.toString());
+			
+			if (notificationsEnabled) {
+				// Request desktop notification permission when enabling
+				requestNotificationPermission();
+				startNotificationChecker();
+			} else {
+				stopNotificationChecker();
+			}
+			
+			// Re-render animals to update bell button state
+			if (animalsData) {
+				renderAnimals();
+			}
+		}
+
+		// Start notification checker
+		function startNotificationChecker() {
+			stopNotificationChecker(); // Clear any existing interval
+			notificationCheckInterval = setInterval(checkForNotifications, 5 * 60 * 1000); // 5 minutes
+			checkForNotifications(); // Check immediately
+		}
+
+		// Stop notification checker
+		function stopNotificationChecker() {
+			if (notificationCheckInterval) {
+				clearInterval(notificationCheckInterval);
+				notificationCheckInterval = null;
+			}
+		}
+
+		// Check for notifications
+		function checkForNotifications() {
+			if (!animalsData || !notificationsEnabled) return;
+			
+			const now = Math.floor(Date.now() / 1000);
+			const ownedAnimals = animalsData.animals.filter((animal) => animal.isOwned);
+			
+			ownedAnimals.forEach((animal) => {
+				if (animal.collection_time <= now) {
+					const animalName = animal.int_name.replace('farm_', '').replace(/_/g, ' ');
+					const animalKey = `${animalName}-${animal.collection_time}`;
+					
+					// Check if we've already notified for this animal/time combination
+					if (!lastCheckedTimes[animalKey] || lastCheckedTimes[animalKey] !== animal.collection_time) {
+						// Show desktop notification
+						showDesktopNotification(animalName, animal.total);
+						
+						// Update last checked time
+						lastCheckedTimes[animalKey] = animal.collection_time;
+						saveLastCheckedTimes();
+					}
+				}
+			});
+		}
+
+		function fetchAnimals() {
+			if (!pkey) {
+				renderKeyInputForm();
+				return;
+			}
+
+			fetch(API_URL, {
+				headers: {
+					'X-Tycoon-Key': pkey
+				}
+			})
+				.then((response) => {
+					if (!response.ok) {
+						throw new Error(`HTTP error! status: ${response.status}`);
+					}
+					return response.json();
+				})
+				.then((data) => {
+					if (!data || !data.animals) {
+						throw new Error('Invalid data format received');
+					}
+					animalsData = data;
+					renderAnimals();
+					// Check for notifications immediately if enabled
+					if (notificationsEnabled) {
+						checkForNotifications();
+					}
+				})
+				.catch((error) => {
+					console.error('Error fetching animal data:', error);
+					renderErrorMessage('Failed to load animal data. Please check your API key.');
+				});
+		}
+
+		function renderKeyInputForm() {
+			const app = document.getElementById('app');
+			app.innerHTML = `
+				<div class="hud-container">
+					<h2 class="form-title">Enter Private API Key</h2>
+					<form id="keyForm" class="key-form">
+						<input type="text" id="playerKey" class="key-input" placeholder="Enter your private api key" required>
+						<button type="submit" class="key-submit">Save</button>
+					</form>
+				</div>
+			`;
+
+			document.getElementById('keyForm').addEventListener('submit', function (e) {
+				e.preventDefault();
+				const keyInput = document.getElementById('playerKey').value.trim();
+				if (keyInput) {
+					savePlayerKey(keyInput);
+					fetchAnimals();
+				}
+			});
+		}
+
+		function renderErrorMessage(message) {
+			const app = document.getElementById('app');
+			app.innerHTML = `
+				<div class="hud-container">
+					<div class="header-controls">
+						<button id="clearKeyBtn" class="key-clear">Clear API Key</button>
+					</div>
+					<div class="error-message">${message}</div>
+				</div>
+			`;
+
+			document.getElementById('clearKeyBtn').addEventListener('click', function () {
+				clearPlayerKey();
+			});
+		}
+
+		function formatTimeLeft(timestamp) {
+			if (!timestamp) return 'Not available';
+
+			const now = Math.floor(Date.now() / 1000);
+			const collectionTime = timestamp;
+
+			if (collectionTime <= now) {
+				return 'Ready to collect';
+			}
+
+			const diffSec = collectionTime - now;
+			const diffHrs = Math.floor(diffSec / 3600);
+			const diffMins = Math.floor((diffSec % 3600) / 60);
+
+			return `${diffHrs}h ${diffMins}m`;
+		}
+
+		function renderAnimals() {
+			if (!animalsData) return;
+
+			const app = document.getElementById('app');
+			let html = '<div class="hud-container">';
+
+			html += '<div class="header-controls">';
+			html += `<button id="notificationToggle" class="notification-toggle ${notificationsEnabled ? 'active' : ''}" title="${notificationsEnabled ? 'Notifications ON' : 'Notifications OFF'}">`;
+			html += notificationsEnabled ? '🔔' : '🔕';
+			html += '</button>';
+			html += '<button id="clearKeyBtn" class="key-clear">Clear API Key</button>';
+			html += '</div>';
+
+			const ownedAnimals = animalsData.animals.filter((animal) => animal.isOwned);
+
+			if (ownedAnimals.length === 0) {
+				html += '<p class="no-animals">No animals owned</p>';
+			} else {
+				ownedAnimals.forEach((animal) => {
+					const feedPercent = Math.round((animal.feed_level / animal.feed_max) * 100);
+					const animalName = animal.int_name.replace('farm_', '').replace(/_/g, ' ');
+
+					html += `
+						<div class="hud-item">
+							<div class="hud-name">${animalName}</div>
+							<div class="hud-details">
+								<span class="hud-count">${animal.total}</span>
+								<div class="hud-progress">
+									<div class="hud-progress-fill" style="width: ${feedPercent}%"></div>
+								</div>
+								<span class="hud-time">${formatTimeLeft(animal.collection_time)}</span>
+							</div>
+						</div>
+					`;
+				});
+			}
+
+			html += '</div>';
+			app.innerHTML = html;
+
+			// Add event listeners
+			document.getElementById('notificationToggle').addEventListener('click', function () {
+				toggleNotifications();
+			});
+
+			document.getElementById('clearKeyBtn').addEventListener('click', function () {
+				clearPlayerKey();
+			});
+		}
+
+		function setActive(active) {
+			const app = document.getElementById('app');
+
+			if (active) {
+				app.style.display = 'block';
+				fetchAnimals();
+			} else {
+				app.style.display = 'none';
+			}
+		}
+
+		// Handle messages from parent window
+		window.addEventListener('message', (event) => {
+			if (event.data.fromTycoonScript === true) {
+				isRunningInGame = true;
+			}
+
+			if (event.data.data == null) return;
+
+			if (event.data.data['focused'] !== undefined) {
+				focused = event.data.data['focused'];
+				setActive(focused && tabbed);
+			}
+			if (event.data.data['tabbed'] !== undefined) {
+				tabbed = event.data.data['tabbed'];
+				setActive(focused && tabbed);
+			}
+		});
+
+		// Handle Escape key
+		window.addEventListener('keydown', (e) => {
+			if (e.key === 'Escape') {
+				window.parent.postMessage({ type: 'pin' }, '*');
+			}
+		});
+
+		// Initialize on load
+		window.onload = () => {
+			loadSettings();
+			window.parent.postMessage({ type: 'getData' }, '*');
+			setActive(true);
+			
+			// Start notification checker if enabled
+			if (notificationsEnabled) {
+				startNotificationChecker();
+			}
+			
+			// Also check when the page becomes visible again
+			document.addEventListener('visibilitychange', function() {
+				if (!document.hidden && notificationsEnabled) {
+					checkForNotifications();
+				}
+			});
+		};
+	</script>
+	<style>
+		body {
+			font-family: 'Arial', sans-serif;
+			margin: 0;
+			padding: 0;
+			background-color: transparent;
+			color: #fff;
+			overflow: hidden;
+		}
+
+		.hud-container {
+			position: absolute;
+			top: 50%;
+			left: 50%;
+			transform: translate(-50%, -50%);
+			max-width: 400px;
+			width: 90%;
+			background-color: rgba(0, 0, 0, 0.6);
+			border-radius: 10px;
+			padding: 15px;
+			box-shadow: 0 0 10px rgba(0, 0, 0, 0.3);
+		}
+
+		.header-controls {
+			display: flex;
+			justify-content: space-between;
+			margin-bottom: 15px;
+		}
+
+		.header-controls .key-clear {
+			padding: 6px 12px;
+			font-size: 12px;
+		}
+
+		.notification-toggle {
+			background: none;
+			border: 1px solid rgba(255, 255, 255, 0.3);
+			color: white;
+			padding: 6px 12px;
+			border-radius: 4px;
+			cursor: pointer;
+			font-size: 16px;
+			transition: all 0.3s;
+		}
+
+		.notification-toggle.active {
+			background-color: rgba(76, 175, 80, 0.3);
+			border-color: #4caf50;
+		}
+
+		.notification-toggle:hover {
+			background-color: rgba(255, 255, 255, 0.1);
+		}
+
+		.hud-item {
+			margin-bottom: 12px;
+			padding: 8px;
+			border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+		}
+
+		.hud-item:last-child {
+			border-bottom: none;
+			margin-bottom: 0;
+		}
+
+		.hud-name {
+			font-size: 18px;
+			font-weight: bold;
+			text-transform: capitalize;
+			margin-bottom: 5px;
+		}
+
+		.hud-details {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			font-size: 14px;
+		}
+
+		.hud-count {
+			background-color: rgba(255, 255, 255, 0.2);
+			padding: 3px 8px;
+			border-radius: 4px;
+			flex: 0 0 auto;
+			margin-right: 8px;
+		}
+
+		.hud-progress {
+			height: 8px;
+			background-color: rgba(255, 255, 255, 0.2);
+			border-radius: 4px;
+			overflow: hidden;
+			flex: 1;
+			margin: 0 8px;
+		}
+
+		.hud-progress-fill {
+			height: 100%;
+			background-color: #4caf50;
+		}
+
+		.hud-time {
+			flex: 0 0 auto;
+			white-space: nowrap;
+			font-size: 13px;
+			color: #ddd;
+		}
+
+		.no-animals {
+			text-align: center;
+			color: #ccc;
+			padding: 5px;
+			font-size: 12px;
+		}
+
+		.error {
+			display: none;
+		}
+
+		.error-message {
+			color: #ff6b6b;
+			text-align: center;
+			padding: 10px;
+			font-size: 14px;
+			background-color: rgba(255, 0, 0, 0.1);
+			border-radius: 5px;
+			margin: 10px 0;
+		}
+
+		#dummy-button {
+			display: none;
+		}
+
+		.form-title {
+			text-align: center;
+			margin-bottom: 10px;
+			font-size: 18px;
+		}
+
+		.key-form {
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+		}
+
+		.key-input {
+			padding: 8px;
+			margin-bottom: 10px;
+			width: 100%;
+			border: 1px solid #ccc;
+			border-radius: 4px;
+			font-size: 14px;
+		}
+
+		.button-group {
+			display: flex;
+			gap: 8px;
+			width: 100%;
+		}
+
+		.key-submit,
+		.key-clear {
+			padding: 8px 16px;
+			border: none;
+			border-radius: 4px;
+			cursor: pointer;
+			font-size: 14px;
+			flex: 1;
+		}
+
+		.key-submit {
+			background-color: #4caf50;
+			color: #fff;
+		}
+
+		.key-submit:hover {
+			background-color: #45a049;
+		}
+
+		.key-clear {
+			background-color: #f44336;
+			color: #fff;
+		}
+
+		.key-clear:hover {
+			background-color: #d32f2f;
+		}
+	</style>
+</html>
